@@ -10,5 +10,7 @@ class Logger(object):
 
     def add_line(self, content):
         msg = self.prefix + content
-        print(msg)
-        sys.stdout.flush()
+        fp = open(self.log_fn, 'a')
+        fp.write(msg + '\n')
+        fp.flush()
+        fp.close()
