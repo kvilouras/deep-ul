@@ -1,0 +1,25 @@
+resume: true
+test_freq: 1
+wandb:
+  project_name: image-vq-vae
+  resume: false
+dataset:
+  name: stl10
+  resize: 64
+  batch_size: 64
+  num_workers: 2
+model:
+  name: image-vqvae
+  model_dir: checkpoints/vqvae
+  arch: VQVAE
+  args:
+    out_channels: 256
+    num_blocks: 2
+    code_dim: 256
+    code_size: 128
+    beta: 1.0
+optimizer:
+  lr: 0.0005
+  weight_decay: 1.0e-06
+  num_epochs: 50
+  grad_clip: 1.0
