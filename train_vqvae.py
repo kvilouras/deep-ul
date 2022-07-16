@@ -10,6 +10,7 @@ from torch.backends import cudnn
 import torch.optim
 
 from utils import train_utils
+from utils.logger import ProgressMeter, AverageMeter
 from utils.vis import visualize_data
 
 
@@ -70,8 +71,9 @@ def main():
         elif args.use_wandb:
             # restore model checkpoint from wandb
             # (run_path is expected to be an env variable of type 'username/project/run-id')
-            wandb.restore('checkpoint.pth.tar', run_path=os.environ['RUN_PATH'])
-            shutil.move('checkpoint.pth.tar', ckp_manager.last_checkpoint_fn())
+            wandb.restore(ckp_manager.last_checkpoint_fn(), run_path=os.environ['RUN_PATH'])
+            # wandb.restore('checkpoint.pth.tar', run_path=os.environ['RUN_PATH'])
+            # shutil.move('checkpoint.pth.tar', ckp_manager.last_checkpoint_fn())
             start_epoch = ckp_manager.restore(restore_last=True, model=model, optimizer=optimizer)
             logger.add_line("Checkpoint loaded from WandB'{}' (epoch {})".format(
                 ckp_manager.last_checkpoint_fn(), start_epoch
@@ -111,9 +113,9 @@ def main():
                 # log losses per epoch
                 wandb.log(
                     dict(
-                        **{'train/' + k: v for k, v in train_losses.items()},
-                        **{'test/' + k: v for k, v in test_losses.items()},
-                        epoch=epoch
+                        **{'train/' + k: np.mean(v[-50:]) for k, v in train_losses.items()},
+                        **{'test/' + k: np.mean(v) for k, v in test_losses.items()},
+                        step=epoch
                     )
                 )
     else:
@@ -124,8 +126,13 @@ def main():
             if k not in test_losses:
                 test_losses[k] = []
             test_losses[k].append(test_loss[k])
-        # log reconstructions to wandb
+        # log losses + reconstructions to wandb
         if args.use_wandb:
+            wandb.log(
+                dict(
+                    **{'inference/' + k: np.mean(v) for k, v in test_losses.items()}
+                )
+            )
             recon = reconstruct_samples(test_dl, model, use_gpu, n=25)
             wandb.log({'final_reconstructions': wandb.Image(recon.numpy(), caption='Final reconstructions')})
 
@@ -137,9 +144,16 @@ def main():
 
 def run_phase(phase, loader, model, optimizer, epoch, cfg, logger, use_gpu):
     logger.add_line('\n{}: Epoch {}'.format(phase, epoch))
+    final_loss_meter = AverageMeter('Final Loss', ':.4f')
+    recon_loss_meter = AverageMeter('Recon Loss', ':.4f')
+    vq_loss_meter = AverageMeter('VQ Loss', ':.4f')
+    commit_loss_meter = AverageMeter('Commitment Loss', ':.4f')
+    progress = ProgressMeter(
+        len(loader), [final_loss_meter, recon_loss_meter, vq_loss_meter, commit_loss_meter],
+        phase=phase, epoch=epoch, logger=logger
+    )
 
     model.train(phase == 'train')
-    pbar = tqdm(total=len(loader.dataset))  # progress bar
     losses = dict()
     for i, sample in enumerate(loader):
         x = sample[0]  # discard label here
@@ -153,25 +167,26 @@ def run_phase(phase, loader, model, optimizer, epoch, cfg, logger, use_gpu):
             if cfg['grad_clip']:
                 nn.utils.clip_grad_norm_(model.parameters(), cfg['grad_clip'])  # gradient clipping (optional)
             optimizer.step()
-            desc = f"Epoch {epoch}"
             for k, v in out.items():
                 if k not in losses:
                     losses[k] = []
                 losses[k].append(v.item())
-                avg_loss = np.mean(losses[k][-50:])
-                desc += f", {k} {avg_loss:.4f}"
-                pbar.set_description(desc)
-                pbar.update(x.shape[0])
+            # update meters
+            final_loss_meter.update(losses['loss'].item(), x.shape[0])
+            recon_loss_meter.update(losses['recon_loss'].item(), x.shape[0])
+            vq_loss_meter.update(losses['vq_loss'].item(), x.shape[0])
+            commit_loss_meter.update(losses['commitment_loss'].item(), x.shape[0])
+            # show progress
+            if (i + 1) % 100 == 0 or i == 0 or i == len(loader) - 1:
+                progress.display(i + 1)
         else:
             with torch.no_grad():
                 out = model.loss(x)
                 for k, v in out.items():
                     losses[k] = losses.get(k, 0) + v.item() * x.shape[0]
 
-    pbar.close()
-
     if phase != 'train':
-        desc = "Test "
+        desc = "Test"
         for k in losses.keys():
             losses[k] /= len(loader.dataset)
             desc += f", {k} {losses[k]:.4f}"
@@ -185,7 +200,7 @@ def reconstruct_samples(loader, model, use_gpu, n=25):
     Return n pairs of original/reconstructed samples
     Note that n mut be <= mini-batch size.
     """
-    x = next(iter(loader))[:n]
+    x = next(iter(loader))[0][:n]
     _, c, h, w = x.shape
     if use_gpu:
         x = x.cuda()
