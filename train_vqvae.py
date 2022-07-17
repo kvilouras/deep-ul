@@ -106,9 +106,9 @@ def main():
                 if args.use_wandb and epoch % 5 == 0 and epoch != 0 and epoch != end_epoch - 1:
                     wandb.save(ckp_manager.last_checkpoint_fn(), policy="now")
                     # log reconstructions to wandb
-                    recon = reconstruct_samples(test_dl, model, use_gpu, n=25)
+                    recon = reconstruct_samples(test_dl, model, use_gpu, n=32)
                     wandb.log({f'recon_ep{epoch}': wandb.Image(
-                        make_grid(recon, nrow=10).permute(1, 2, 0).numpy(), caption=f'Reconstructions Epoch {epoch}'
+                        recon.numpy(), caption=f'Reconstructions Epoch {epoch}'
                     )})
 
             if args.use_wandb:
@@ -135,9 +135,9 @@ def main():
                     **{'inference/' + k: np.mean(v) for k, v in test_losses.items()}
                 )
             )
-            recon = reconstruct_samples(test_dl, model, use_gpu, n=25)
+            recon = reconstruct_samples(test_dl, model, use_gpu, n=32)
             wandb.log({'final_reconstructions': wandb.Image(
-                make_grid(recon, nrow=10).permute(1, 2, 0).numpy(), caption='Final reconstructions')}
+                recon.numpy(), caption='Final reconstructions')}
             )
 
     if args.use_wandb:
@@ -211,8 +211,8 @@ def reconstruct_samples(loader, model, use_gpu, n=25):
     with torch.no_grad():
         z = model.encode_code(x)
         x_recon = model.decode_code(z)
-    x = x.cpu().permute(0, 2, 3, 1)
-    reconstructions = torch.stack((x, x_recon), dim=1).reshape((-1, c, h, w)) * 255  # to uint8
+    reconstructions = torch.cat((x.cpu(), x_recon), dim=0)
+    reconstructions = make_grid(reconstructions, nrow=8).permute(1, 2, 0)
 
     return reconstructions
 
