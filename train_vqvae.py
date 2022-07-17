@@ -6,6 +6,7 @@ import numpy as np
 import torch.nn as nn
 from torch.backends import cudnn
 import torch.optim
+from torchvision.utils import make_grid
 
 from utils import train_utils
 from utils.logger import ProgressMeter, AverageMeter
@@ -77,7 +78,7 @@ def main():
                 logger.add_line("Checkpoint loaded from WandB'{}' (epoch {})".format(
                     ckp_manager.last_checkpoint_fn(), start_epoch
                 ))
-            except (ValueError, wandb.errors.CommError):
+            except (ValueError, KeyError, wandb.errors.CommError):
                 logger.add_line("No checkpoint found in {}".format(ckp_manager.last_checkpoint_fn()))
         else:
             logger.add_line("No checkpoint found in {}".format(ckp_manager.last_checkpoint_fn()))
@@ -107,7 +108,7 @@ def main():
                     # log reconstructions to wandb
                     recon = reconstruct_samples(test_dl, model, use_gpu, n=25)
                     wandb.log({f'recon_ep{epoch}': wandb.Image(
-                        recon.numpy(), caption=f'Reconstructions Epoch {epoch}'
+                        make_grid(recon, nrow=10).permute(1, 2, 0).numpy(), caption=f'Reconstructions Epoch {epoch}'
                     )})
 
             if args.use_wandb:
@@ -135,7 +136,9 @@ def main():
                 )
             )
             recon = reconstruct_samples(test_dl, model, use_gpu, n=25)
-            wandb.log({'final_reconstructions': wandb.Image(recon.numpy(), caption='Final reconstructions')})
+            wandb.log({'final_reconstructions': wandb.Image(
+                make_grid(recon, nrow=10).permute(1, 2, 0).numpy(), caption='Final reconstructions')}
+            )
 
     if args.use_wandb:
         # save final model to wandb
@@ -209,7 +212,7 @@ def reconstruct_samples(loader, model, use_gpu, n=25):
         z = model.encode_code(x)
         x_recon = model.decode_code(z)
     x = x.cpu().permute(0, 2, 3, 1)
-    reconstructions = torch.stack((x, x_recon), dim=1).reshape((-1, h, w, c))
+    reconstructions = torch.stack((x, x_recon), dim=1).reshape((-1, c, h, w)) * 255  # to uint8
 
     return reconstructions
 
