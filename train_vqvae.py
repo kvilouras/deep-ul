@@ -70,12 +70,14 @@ def main():
             # restore model checkpoint from wandb
             # (run_path is expected to be an env variable of type 'username/project/run-id')
             try:
-                wandb.restore(ckp_manager.last_checkpoint_fn(), run_path=os.environ['RUN_PATH'])
+                wandb.restore(
+                    ckp_manager.last_checkpoint_fn(), run_path=os.environ['RUN_PATH'], replace=False, root=os.getcwd()
+                )
                 start_epoch = ckp_manager.restore(restore_last=True, model=model, optimizer=optimizer)
                 logger.add_line("Checkpoint loaded from WandB'{}' (epoch {})".format(
                     ckp_manager.last_checkpoint_fn(), start_epoch
                 ))
-            except ValueError:
+            except (ValueError, wandb.errors.CommError):
                 logger.add_line("No checkpoint found in {}".format(ckp_manager.last_checkpoint_fn()))
         else:
             logger.add_line("No checkpoint found in {}".format(ckp_manager.last_checkpoint_fn()))
@@ -171,10 +173,10 @@ def run_phase(phase, loader, model, optimizer, epoch, cfg, logger, use_gpu):
                     losses[k] = []
                 losses[k].append(v.item())
             # update meters
-            final_loss_meter.update(losses['loss'].item(), x.shape[0])
-            recon_loss_meter.update(losses['recon_loss'].item(), x.shape[0])
-            vq_loss_meter.update(losses['vq_loss'].item(), x.shape[0])
-            commit_loss_meter.update(losses['commitment_loss'].item(), x.shape[0])
+            final_loss_meter.update(out['loss'].item(), x.shape[0])
+            recon_loss_meter.update(out['recon_loss'].item(), x.shape[0])
+            vq_loss_meter.update(out['vq_loss'].item(), x.shape[0])
+            commit_loss_meter.update(out['commitment_loss'].item(), x.shape[0])
             # show progress
             if (i + 1) % 100 == 0 or i == 0 or i == len(loader) - 1:
                 progress.display(i + 1)
