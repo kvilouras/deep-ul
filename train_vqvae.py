@@ -1,8 +1,6 @@
 import argparse
-import shutil
 import os
 import yaml
-from tqdm import tqdm
 import numpy as np
 
 import torch.nn as nn
@@ -71,13 +69,14 @@ def main():
         elif args.use_wandb:
             # restore model checkpoint from wandb
             # (run_path is expected to be an env variable of type 'username/project/run-id')
-            wandb.restore(ckp_manager.last_checkpoint_fn(), run_path=os.environ['RUN_PATH'])
-            # wandb.restore('checkpoint.pth.tar', run_path=os.environ['RUN_PATH'])
-            # shutil.move('checkpoint.pth.tar', ckp_manager.last_checkpoint_fn())
-            start_epoch = ckp_manager.restore(restore_last=True, model=model, optimizer=optimizer)
-            logger.add_line("Checkpoint loaded from WandB'{}' (epoch {})".format(
-                ckp_manager.last_checkpoint_fn(), start_epoch
-            ))
+            try:
+                wandb.restore(ckp_manager.last_checkpoint_fn(), run_path=os.environ['RUN_PATH'])
+                start_epoch = ckp_manager.restore(restore_last=True, model=model, optimizer=optimizer)
+                logger.add_line("Checkpoint loaded from WandB'{}' (epoch {})".format(
+                    ckp_manager.last_checkpoint_fn(), start_epoch
+                ))
+            except ValueError:
+                logger.add_line("No checkpoint found in {}".format(ckp_manager.last_checkpoint_fn()))
         else:
             logger.add_line("No checkpoint found in {}".format(ckp_manager.last_checkpoint_fn()))
 
