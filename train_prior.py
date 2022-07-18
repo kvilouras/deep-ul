@@ -3,6 +3,7 @@ import os
 import yaml
 import numpy as np
 
+from torch.utils import data
 import torch.nn as nn
 from torch.backends import cudnn
 import torch.optim
@@ -13,16 +14,18 @@ from utils.logger import ProgressMeter, AverageMeter
 from utils.vis import visualize_data
 
 
-parser = argparse.ArgumentParser(description='VQ-VAE Training')
+parser = argparse.ArgumentParser(description='Prior (Gated PixelCNN) Training')
 
 parser.add_argument('cfg', help='Path to config file')
-parser.add_argument('--test-only', action='store_true', help='Run VQ-VAE model on inference mode')
+parser.add_argument('vae_cfg', help='Path to VQ-VAE model config file')
+parser.add_argument('--test-only', action='store_true', help='Run prior model on inference mode')
 parser.add_argument('--use-wandb', action='store_true', help='Enable WandB logging')
 
 
 def main():
     args = parser.parse_args()
     cfg = yaml.safe_load(open(args.cfg))
+    vae_cfg = yaml.safe_load(open(args.vae_cfg))
     use_gpu = torch.cuda.is_available()
 
     # prepare wandb (optional). In this case, some info should be in the input config file.
@@ -36,8 +39,48 @@ def main():
     # instantiate datasets + loaders
     train_dl, test_dl = train_utils.build_dataloaders(cfg['dataset'])
 
-    # instantiate model
-    model = train_utils.build_model(cfg['model'])
+    # instantiate (pre-trained) VQ-VAE model
+    vae_model = train_utils.build_model(vae_cfg['model'], logger=logger)
+    vae_model_dir = '{}/{}/{}'.format(vae_cfg['model']['model_dir'], vae_cfg['model']['name'], 'checkpoint.pth.tar')
+    if os.path.isfile(vae_model_dir):
+        ckp = torch.load(vae_model_dir, map_location={'cuda:0': 'cpu'})
+        vae_epoch = ckp['epoch']
+        vae_model.load_state_dict(ckp['model'])
+        logger.add_line("VAE checkpoint loaded '{}' (epoch {})".format(vae_model_dir, vae_epoch))
+    elif args.use_wandb:
+        # restore VAE model checkpoint from wandb
+        # (run_path is expected to be an env variable of type 'username/project/run-id')
+        try:
+            wandb.restore(
+                vae_model_dir, run_path=os.environ['VAE_RUN_PATH'], replace=False, root=os.getcwd()
+            )
+            ckp = torch.load(vae_model_dir, map_location={'cuda:0': 'cpu'})
+            vae_epoch = ckp['epoch']
+            vae_model.load_state_dict(ckp['model'])
+            logger.add_line("VAE checkpoint loaded from WandB'{}' (epoch {})".format(
+                vae_model_dir, vae_epoch
+            ))
+        except (ValueError, KeyError, wandb.errors.CommError):
+            logger.add_line("No VAE checkpoint found in {}".format(vae_model_dir))
+    else:
+        logger.add_line("No VAE checkpoint found in {}".format(vae_model_dir))
+
+    # Create prior dataset, i.e. map input images to latent code indices,
+    # which will then be fed to Gated PixelCNN
+    prior_train_ds, input_shape = create_prior_dataset(vae_model, train_dl, use_gpu)
+    train_dl = data.DataLoader(
+        prior_train_ds, batch_size=cfg['dataset']['batch_size'], num_workers=cfg['dataset']['num_workers'],
+        pin_memory=True, shuffle=True
+    )
+    cfg['model']['args']['input_shape'] = input_shape
+    prior_test_ds, _ = create_prior_dataset(vae_model, test_dl, use_gpu)
+    test_dl = data.DataLoader(
+        prior_test_ds, batch_size=cfg['dataset']['batch_size'], num_workers=cfg['dataset']['num_workers'],
+        pin_memory=True, shuffle=False
+    )
+
+    # instantiate prior model
+    model = train_utils.build_model(cfg['model'], logger=logger)
 
     # instantiate optimizer
     optimizer = torch.optim.Adam(
@@ -56,8 +99,6 @@ def main():
         wandb.log({'test_examples': img})
         wandb.watch(model)  # also log gradients of weights
 
-    # TODO: add a lr scheduler if needed
-
     # checkpoint manager
     ckp_manager = train_utils.CheckpointManager(model_dir)
 
@@ -72,7 +113,8 @@ def main():
             # (run_path is expected to be an env variable of type 'username/project/run-id')
             try:
                 wandb.restore(
-                    ckp_manager.last_checkpoint_fn(), run_path=os.environ['RUN_PATH'], replace=False, root=os.getcwd()
+                    ckp_manager.last_checkpoint_fn(), run_path=os.environ['PRIOR_RUN_PATH'],
+                    replace=False, root=os.getcwd()
                 )
                 start_epoch = ckp_manager.restore(restore_last=True, model=model, optimizer=optimizer)
                 logger.add_line("Checkpoint loaded from WandB'{}' (epoch {})".format(
@@ -105,10 +147,10 @@ def main():
                 # save model checkpoint to wandb every 5 epochs
                 if args.use_wandb and epoch % 5 == 0 and epoch != 0 and epoch != end_epoch - 1:
                     wandb.save(ckp_manager.last_checkpoint_fn(), policy="now")
-                    # log reconstructions to wandb
-                    recon = reconstruct_samples(test_dl, model, use_gpu, n=32)
-                    wandb.log({f'recon_ep{epoch}': wandb.Image(
-                        recon.numpy(), caption=f'Reconstructions Epoch {epoch}'
+                    # log generated samples to wandb
+                    gen = generate_samples(model, vae_model, n=50)
+                    wandb.log({f'gen_ep{epoch}': wandb.Image(
+                        gen.numpy(), caption=f'Generated samples Epoch {epoch}'
                     )})
 
             if args.use_wandb:
@@ -128,16 +170,16 @@ def main():
             if k not in test_losses:
                 test_losses[k] = []
             test_losses[k].append(test_loss[k])
-        # log losses + reconstructions to wandb
+        # log losses + generated samples to wandb
         if args.use_wandb:
             wandb.log(
                 dict(
                     **{'inference/' + k: np.mean(v) for k, v in test_losses.items()}
                 )
             )
-            recon = reconstruct_samples(test_dl, model, use_gpu, n=32)
-            wandb.log({'final_reconstructions': wandb.Image(
-                recon.numpy(), caption='Final reconstructions')}
+            gen = generate_samples(model, vae_model, n=50)
+            wandb.log({'final_gen': wandb.Image(
+                gen.numpy(), caption='Final generated samples')}
             )
 
     if args.use_wandb:
@@ -146,28 +188,42 @@ def main():
         run.finish()
 
 
+def create_prior_dataset(model, loader, use_gpu):
+    model.train(False)
+    prior_data = []
+    for i, sample in enumerate(loader):
+        x, _ = sample
+        if use_gpu:
+            x = x.cuda(non_blocking=True)
+        z = model.encode_code(x)  # indices
+        if i == 0:
+            input_shape = list(z.shape[1:])
+        prior_data.append(z.long())
+
+    prior_data = torch.cat(prior_data, dim=0)
+
+    return prior_data, input_shape
+
+
 def run_phase(phase, loader, model, optimizer, epoch, cfg, logger, use_gpu):
     logger.add_line('\n{}: Epoch {}'.format(phase, epoch))
-    final_loss_meter = AverageMeter('Final Loss', ':.4f')
-    recon_loss_meter = AverageMeter('Recon Loss', ':.4f')
-    vq_loss_meter = AverageMeter('VQ Loss', ':.4f')
-    commit_loss_meter = AverageMeter('Commitment Loss', ':.4f')
+    nll_loss_meter = AverageMeter('NLL Loss', ':.4f')
+    bpd_meter = AverageMeter('Bits/dim', ':.4f')
     progress = ProgressMeter(
-        len(loader), [final_loss_meter, recon_loss_meter, vq_loss_meter, commit_loss_meter],
-        phase=phase, epoch=epoch, logger=logger
+        len(loader), [nll_loss_meter, bpd_meter], phase=phase, epoch=epoch, logger=logger
     )
 
     model.train(phase == 'train')
     losses = dict()
     for i, sample in enumerate(loader):
-        x = sample[0]  # discard label here
+        x = sample
         if use_gpu:
             x = x.cuda(non_blocking=True)
 
         if phase == 'train':
             out = model.loss(x)
             optimizer.zero_grad()
-            out['loss'].backward()
+            out['nll_loss'].backward()
             if cfg['grad_clip']:
                 nn.utils.clip_grad_norm_(model.parameters(), cfg['grad_clip'])  # gradient clipping (optional)
             optimizer.step()
@@ -176,10 +232,8 @@ def run_phase(phase, loader, model, optimizer, epoch, cfg, logger, use_gpu):
                     losses[k] = []
                 losses[k].append(v.item())
             # update meters
-            final_loss_meter.update(out['loss'].item(), x.shape[0])
-            recon_loss_meter.update(out['recon_loss'].item(), x.shape[0])
-            vq_loss_meter.update(out['vq_loss'].item(), x.shape[0])
-            commit_loss_meter.update(out['commitment_loss'].item(), x.shape[0])
+            nll_loss_meter.update(out['nll_loss'].item(), x.shape[0])
+            bpd_meter.update(out['bpd'].item(), x.shape[0])
             # show progress
             if (i + 1) % 100 == 0 or i == 0 or i == len(loader) - 1:
                 progress.display(i + 1)
@@ -199,22 +253,16 @@ def run_phase(phase, loader, model, optimizer, epoch, cfg, logger, use_gpu):
     return losses
 
 
-def reconstruct_samples(loader, model, use_gpu, n=25):
+def generate_samples(prior_model, vae_model, n=100):
     """
-    Return n pairs of original/reconstructed samples
-    Note that n mut be <= mini-batch size.
+    Return n randomly generated samples
     """
-    x = next(iter(loader))[0][:n]
-    _, c, h, w = x.shape
-    if use_gpu:
-        x = x.cuda()
-    with torch.no_grad():
-        z = model.encode_code(x)
-        x_recon = model.decode_code(z)
-    reconstructions = torch.cat((x.cpu(), x_recon.permute(0, 3, 1, 2)), dim=0)
-    reconstructions = make_grid(reconstructions, nrow=8).permute(1, 2, 0)
 
-    return reconstructions
+    samples = prior_model.sample(n)
+    x_gen = vae_model.decode_code(samples).permute(0, 3, 1, 2).contiguous()
+    x_gen = make_grid(x_gen, nrow=10).permute(1, 2, 0)
+
+    return x_gen
 
 
 if __name__ == '__main__':
