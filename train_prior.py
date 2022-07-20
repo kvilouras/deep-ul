@@ -39,6 +39,15 @@ def main():
     # instantiate datasets + loaders
     train_dl, test_dl = train_utils.build_dataloaders(cfg['dataset'])
 
+    # log train/test samples
+    if args.use_wandb:
+        grid = visualize_data(train_dl.dataset, num_imgs=100, nrow=10, return_grid=True).permute(1, 2, 0).numpy()
+        img = wandb.Image(grid, caption='Train data')
+        wandb.log({'training_examples': img})
+        grid = visualize_data(test_dl.dataset, num_imgs=100, nrow=10, return_grid=True).permute(1, 2, 0).numpy()
+        img = wandb.Image(grid, caption='Test data')
+        wandb.log({'test_examples': img})
+
     # instantiate (pre-trained) VQ-VAE model
     vae_model = train_utils.build_model(vae_cfg['model'], logger=logger)
     vae_model_dir = '{}/{}/{}'.format(vae_cfg['model']['model_dir'], vae_cfg['model']['name'], 'checkpoint.pth.tar')
@@ -89,14 +98,7 @@ def main():
         weight_decay=cfg['optimizer']['weight_decay'] if 'weight_decay' in cfg['optimizer'] else 0
     )
 
-    # log train/test samples
     if args.use_wandb:
-        grid = visualize_data(train_dl.dataset, num_imgs=100, nrow=10, return_grid=True).permute(1, 2, 0).numpy()
-        img = wandb.Image(grid, caption='Train data')
-        wandb.log({'training_examples': img})
-        grid = visualize_data(test_dl.dataset, num_imgs=100, nrow=10, return_grid=True).permute(1, 2, 0).numpy()
-        img = wandb.Image(grid, caption='Test data')
-        wandb.log({'test_examples': img})
         wandb.watch(model)  # also log gradients of weights
 
     # checkpoint manager
