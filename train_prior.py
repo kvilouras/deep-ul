@@ -200,7 +200,7 @@ def create_prior_dataset(model, loader, use_gpu):
         z = model.encode_code(x)  # indices
         if i == 0:
             input_shape = list(z.shape[1:])
-        prior_data.append(z.long())
+        prior_data.append(z.cpu().long())
 
     prior_data = torch.cat(prior_data, dim=0)
 
@@ -260,7 +260,7 @@ def generate_samples(prior_model, vae_model, n=100):
     Return n randomly generated samples
     """
 
-    samples = prior_model.sample(n)
+    samples = prior_model.sample(n).long()
     x_gen = vae_model.decode_code(samples).permute(0, 3, 1, 2).contiguous()
     x_gen = make_grid(x_gen, nrow=10).permute(1, 2, 0)
 
