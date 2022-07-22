@@ -20,6 +20,9 @@ parser.add_argument('cfg', help='Path to config file')
 parser.add_argument('vae_cfg', help='Path to VQ-VAE model config file')
 parser.add_argument('--test-only', action='store_true', help='Run prior model on inference mode')
 parser.add_argument('--use-wandb', action='store_true', help='Enable WandB logging')
+parser.add_argument('--class-conditional', action='store_true', help='Enable class-conditional generation')
+parser.add_argument('--num_classes', type=int, default=None, help='Total number of classes (for '
+                                                                  'class-conditional generation)')
 
 
 def main():
@@ -27,6 +30,8 @@ def main():
     cfg = yaml.safe_load(open(args.cfg))
     vae_cfg = yaml.safe_load(open(args.vae_cfg))
     use_gpu = torch.cuda.is_available()
+    if args.class_conditional:
+        assert args.num_classes, "Number of classes is not given"
 
     # prepare wandb (optional). In this case, some info should be in the input config file.
     if args.use_wandb:
@@ -76,13 +81,18 @@ def main():
 
     # Create prior dataset, i.e. map input images to latent code indices,
     # which will then be fed to Gated PixelCNN
-    prior_train_ds, input_shape = create_prior_dataset(vae_model, train_dl, use_gpu)
+    prior_train_ds, input_shape = create_prior_dataset(vae_model, train_dl, args, use_gpu)
+    if args.class_conditional:
+        prior_train_ds = data.TensorDataset(prior_train_ds)  # data + labels
+        cfg['model']['args']['conditional_size'] = args.num_classes
     train_dl = data.DataLoader(
         prior_train_ds, batch_size=cfg['dataset']['batch_size'], num_workers=cfg['dataset']['num_workers'],
         pin_memory=True, shuffle=True
     )
     cfg['model']['args']['input_shape'] = input_shape
-    prior_test_ds, _ = create_prior_dataset(vae_model, test_dl, use_gpu)
+    prior_test_ds, _ = create_prior_dataset(vae_model, test_dl, args, use_gpu)
+    if args.class_conditional:
+        prior_test_ds = data.TensorDataset(prior_test_ds)
     test_dl = data.DataLoader(
         prior_test_ds, batch_size=cfg['dataset']['batch_size'], num_workers=cfg['dataset']['num_workers'],
         pin_memory=True, shuffle=False
@@ -134,8 +144,8 @@ def main():
         test_freq = cfg['test_freq'] if 'test_freq' in cfg else 1
         train_losses, test_losses = dict(), dict()
         for epoch in range(start_epoch, end_epoch):
-            train_loss = run_phase('train', train_dl, model, optimizer, epoch, cfg['optimizer'], logger, use_gpu)
-            test_loss = run_phase('test', test_dl, model, optimizer, epoch, cfg['optimizer'], logger, use_gpu)
+            train_loss = run_phase('train', train_dl, model, optimizer, epoch, cfg['optimizer'], args, logger, use_gpu)
+            test_loss = run_phase('test', test_dl, model, optimizer, epoch, cfg['optimizer'], args, logger, use_gpu)
 
             for k in train_loss.keys():
                 if k not in train_losses:
@@ -150,7 +160,7 @@ def main():
                 if args.use_wandb and epoch % 5 == 0 and epoch != 0 and epoch != end_epoch - 1:
                     wandb.save(ckp_manager.last_checkpoint_fn(), policy="now")
                     # log generated samples to wandb
-                    gen = generate_samples(model, vae_model, n=50)
+                    gen = generate_samples(model, vae_model, args, n=50)
                     wandb.log({f'gen_ep{epoch}': wandb.Image(
                         gen.numpy(), caption=f'Generated samples Epoch {epoch}'
                     )})
@@ -167,7 +177,7 @@ def main():
     else:
         # Inference mode
         test_losses = dict()
-        test_loss = run_phase('test', test_dl, model, optimizer, end_epoch, cfg['optimizer'], logger, use_gpu)
+        test_loss = run_phase('test', test_dl, model, optimizer, end_epoch, cfg['optimizer'], args, logger, use_gpu)
         for k in test_loss.keys():
             if k not in test_losses:
                 test_losses[k] = []
@@ -179,7 +189,7 @@ def main():
                     **{'inference/' + k: np.mean(v) for k, v in test_losses.items()}
                 )
             )
-            gen = generate_samples(model, vae_model, n=50)
+            gen = generate_samples(model, vae_model, args, n=50)
             wandb.log({'final_gen': wandb.Image(
                 gen.numpy(), caption='Final generated samples')}
             )
@@ -190,24 +200,33 @@ def main():
         run.finish()
 
 
-def create_prior_dataset(model, loader, use_gpu):
+def create_prior_dataset(model, loader, args, use_gpu):
     model.train(False)
-    prior_data = []
+    prior_data, prior_labels = [], []
     for i, sample in enumerate(loader):
-        x, _ = sample
+        x, y = sample
         if use_gpu:
             x = x.cuda(non_blocking=True)
         z = model.encode_code(x)  # indices
         if i == 0:
             input_shape = list(z.shape[1:])
         prior_data.append(z.cpu().long())
+        if args.class_conditional:
+            # convert labels to one-hot
+            y_onehot = torch.zeros((y.shape[0], args.num_classes), dtype=torch.long)
+            y_onehot.scatter_(1, y.long().unsqueeze(1), 1)
+            prior_labels.append(y_onehot)
 
     prior_data = torch.cat(prior_data, dim=0)
+    if args.class_conditional:
+        prior_labels = torch.cat(prior_labels, dim=0)
+
+        return (prior_data, prior_labels), input_shape
 
     return prior_data, input_shape
 
 
-def run_phase(phase, loader, model, optimizer, epoch, cfg, logger, use_gpu):
+def run_phase(phase, loader, model, optimizer, epoch, cfg, args, logger, use_gpu):
     logger.add_line('\n{}: Epoch {}'.format(phase, epoch))
     nll_loss_meter = AverageMeter('NLL Loss', ':.4f')
     bpd_meter = AverageMeter('Bits/dim', ':.4f')
@@ -218,12 +237,20 @@ def run_phase(phase, loader, model, optimizer, epoch, cfg, logger, use_gpu):
     model.train(phase == 'train')
     losses = dict()
     for i, sample in enumerate(loader):
-        x = sample
+        if args.class_conditional:
+            x, y = sample
+        else:
+            x = sample
         if use_gpu:
             x = x.cuda(non_blocking=True)
+            if args.class_conditional:
+                y = y.cuda(non_blocking=True)
 
         if phase == 'train':
-            out = model.loss(x)
+            if args.class_conditional:
+                out = model.loss(x, cond=y)
+            else:
+                out = model.loss(x)
             optimizer.zero_grad()
             out['nll_loss'].backward()
             if cfg['grad_clip']:
@@ -241,7 +268,10 @@ def run_phase(phase, loader, model, optimizer, epoch, cfg, logger, use_gpu):
                 progress.display(i + 1)
         else:
             with torch.no_grad():
-                out = model.loss(x)
+                if args.class_conditional:
+                    out = model.loss(x, cond=y)
+                else:
+                    out = model.loss(x)
                 for k, v in out.items():
                     losses[k] = losses.get(k, 0) + v.item() * x.shape[0]
 
@@ -255,12 +285,18 @@ def run_phase(phase, loader, model, optimizer, epoch, cfg, logger, use_gpu):
     return losses
 
 
-def generate_samples(prior_model, vae_model, n=100):
+def generate_samples(prior_model, vae_model, args, n=100):
     """
     Return n randomly generated samples
     """
 
-    samples = prior_model.sample(n).long()
+    y_onehot = None
+    if args.class_conditional:
+        # generate labels + one-hot encoding
+        y = torch.arange(args.num_classes, dtype=torch.long).repeat(n // args.num_classes).unsqueeze(1)
+        y_onehot = torch.zeros((y.shape[0], args.num_classes), dtype=torch.long)
+        y_onehot.scatter_(1, y, 1)
+    samples = prior_model.sample(n, cond=y_onehot).long()
     x_gen = vae_model.decode_code(samples).permute(0, 3, 1, 2).contiguous()
     x_gen = make_grid(x_gen, nrow=10).permute(1, 2, 0)
 

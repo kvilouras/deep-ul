@@ -19,5 +19,5 @@ model:
 optimizer:
   lr: 0.0005
   weight_decay: 0
-  num_epochs: 50
+  num_epochs: 20
   grad_clip: 1.0
