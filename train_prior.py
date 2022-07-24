@@ -21,7 +21,7 @@ parser.add_argument('vae_cfg', help='Path to VQ-VAE model config file')
 parser.add_argument('--test-only', action='store_true', help='Run prior model on inference mode')
 parser.add_argument('--use-wandb', action='store_true', help='Enable WandB logging')
 parser.add_argument('--class-conditional', action='store_true', help='Enable class-conditional generation')
-parser.add_argument('--num_classes', type=int, default=None, help='Total number of classes (for '
+parser.add_argument('--num-classes', type=int, default=None, help='Total number of classes (for '
                                                                   'class-conditional generation)')
 
 
@@ -83,7 +83,7 @@ def main():
     # which will then be fed to Gated PixelCNN
     prior_train_ds, input_shape = create_prior_dataset(vae_model, train_dl, args, use_gpu)
     if args.class_conditional:
-        prior_train_ds = data.TensorDataset(prior_train_ds)  # data + labels
+        prior_train_ds = data.TensorDataset(*prior_train_ds)  # data + labels
         cfg['model']['args']['conditional_size'] = args.num_classes
     train_dl = data.DataLoader(
         prior_train_ds, batch_size=cfg['dataset']['batch_size'], num_workers=cfg['dataset']['num_workers'],
@@ -92,7 +92,7 @@ def main():
     cfg['model']['args']['input_shape'] = input_shape
     prior_test_ds, _ = create_prior_dataset(vae_model, test_dl, args, use_gpu)
     if args.class_conditional:
-        prior_test_ds = data.TensorDataset(prior_test_ds)
+        prior_test_ds = data.TensorDataset(*prior_test_ds)
     test_dl = data.DataLoader(
         prior_test_ds, batch_size=cfg['dataset']['batch_size'], num_workers=cfg['dataset']['num_workers'],
         pin_memory=True, shuffle=False
@@ -239,6 +239,7 @@ def run_phase(phase, loader, model, optimizer, epoch, cfg, args, logger, use_gpu
     for i, sample in enumerate(loader):
         if args.class_conditional:
             x, y = sample
+            y = y.float()
         else:
             x = sample
         if use_gpu:
@@ -294,7 +295,7 @@ def generate_samples(prior_model, vae_model, args, n=100):
     if args.class_conditional:
         # generate labels + one-hot encoding
         y = torch.arange(args.num_classes, dtype=torch.long).repeat(n // args.num_classes).unsqueeze(1)
-        y_onehot = torch.zeros((y.shape[0], args.num_classes), dtype=torch.long)
+        y_onehot = torch.zeros((y.shape[0], args.num_classes), dtype=torch.float32)
         y_onehot.scatter_(1, y, 1)
     samples = prior_model.sample(n, cond=y_onehot).long()
     x_gen = vae_model.decode_code(samples).permute(0, 3, 1, 2).contiguous()
