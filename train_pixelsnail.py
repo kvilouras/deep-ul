@@ -142,7 +142,9 @@ def main():
         for i, ext in enumerate(['top', 'bottom']):
             fn = 'checkpoint_{}.pth.tar'.format(ext)
             if ckp_manager.custom_checkpoint_exists(fn):
-                start_epoch = ckp_manager.restore(fn=fn, model=models[i], optimizer=optimizers[i])
+                start_epoch = ckp_manager.restore(
+                    fn=ckp_manager.custom_checkpoint_fn(fn), model=models[i], optimizer=optimizers[i]
+                )
                 start_epochs[i] = start_epoch
                 logger.add_line("{} checkpoint loaded {} (epoch {})".format(
                     ext, ckp_manager.custom_checkpoint_fn(fn), start_epoch)
