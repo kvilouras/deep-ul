@@ -97,6 +97,7 @@ def build_model(cfg, logger=None):
 
     if torch.cuda.is_available():
         if isinstance(model, (list, tuple)):
+            model = list(model)
             for i in range(len(model)):
                 model[i] = model[i].cuda()
         else:

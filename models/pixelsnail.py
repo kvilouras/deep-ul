@@ -431,7 +431,7 @@ class PixelSNAIL(nn.Module):
         b, _, h, w = x.shape
         out = self.in_conv(x, cond=cond)
 
-        pos_enc = gen_positional_encodings(x.shape)
+        pos_enc = gen_positional_encodings(x.shape).to(self.device)
 
         if top_condition is not None:
             top_condition = self.top_embedding(top_condition).permute(0, 3, 1, 2).contiguous()

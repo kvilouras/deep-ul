@@ -206,8 +206,8 @@ def main():
                     # log losses per epoch
                     wandb.log(
                         dict(
-                            **{'train/' + k: np.mean(v[-50:]) for k, v in train_losses.items()},
-                            **{'test/' + k: np.mean(v) for k, v in test_losses.items()},
+                            **{f'train_{ext}/' + k: np.mean(v[-50:]) for k, v in train_losses.items()},
+                            **{f'test_{ext}/' + k: np.mean(v) for k, v in test_losses.items()},
                             step=epoch
                         )
                     )
