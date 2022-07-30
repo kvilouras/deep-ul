@@ -210,7 +210,10 @@ def reconstruct_samples(loader, model, use_gpu, n=25):
         x = x.cuda()
     with torch.no_grad():
         z = model.encode_code(x)
-        x_recon = model.decode_code(z)
+        if isinstance(z, tuple):
+            x_recon = model.decode_code(*z)
+        else:
+            x_recon = model.decode_code(z)
     reconstructions = torch.cat((x.cpu(), x_recon.permute(0, 3, 1, 2)), dim=0)
     reconstructions = make_grid(reconstructions, nrow=8).permute(1, 2, 0)
 

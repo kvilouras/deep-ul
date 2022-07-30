@@ -1,0 +1,32 @@
+resume: true
+test_freq: 1
+wandb:
+  project_name: image-vq-vae
+  resume: false
+dataset:
+  name: stl10
+  resize: 64
+  batch_size: 64
+  num_workers: 2
+model:
+  name: image-vqvae2-prior
+  model_dir: checkpoints/vqvae
+  arch: hierarchical_priors
+  args:
+    code_size: 128
+    dim: 128
+    kernel_size: 5
+    mask_center: true
+    n_blocks: 3
+    n_res_blocks: 5
+    attention_key_channels: 16
+    attention_value_channels: 128
+    p: 0.1
+    n_cond_res_blocks: 3
+    cond_kernel: 3
+    n_out_res_blocks: 0
+optimizer:
+  lr: 0.0005
+  weight_decay: 0
+  num_epochs: 20
+  grad_clip: 1.0

@@ -9,9 +9,9 @@ dataset:
   batch_size: 64
   num_workers: 2
 model:
-  name: image-vqvae
+  name: image-vqvae2
   model_dir: checkpoints/vqvae
-  arch: VQVAE
+  arch: VQVAE2
   args:
     out_channels: 256
     num_blocks: 2

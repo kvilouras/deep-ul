@@ -82,13 +82,25 @@ def build_model(cfg, logger=None):
     model = models.__dict__[cfg['arch']](**cfg['args'])
 
     if logger is not None:
-        logger.add_line('=' * 30 + ' Model ' + '=' * 30)
-        logger.add_line(str(model))
-        logger.add_line('=' * 30 + ' Parameters ' + '=' * 30)
-        logger.add_line(param_description(model))
+        if isinstance(model, (list, tuple)):
+            logger.add_line('=' * 30 + ' Model ' + '=' * 30)
+            for m in model:
+                logger.add_line(str(m))
+            logger.add_line('=' * 30 + ' Parameters ' + '=' * 30)
+            for m in model:
+                logger.add_line(param_description(m))
+        else:
+            logger.add_line('=' * 30 + ' Model ' + '=' * 30)
+            logger.add_line(str(model))
+            logger.add_line('=' * 30 + ' Parameters ' + '=' * 30)
+            logger.add_line(param_description(model))
 
     if torch.cuda.is_available():
-        model = model.cuda()
+        if isinstance(model, (list, tuple)):
+            for i in range(len(model)):
+                model[i] = model[i].cuda()
+        else:
+            model = model.cuda()
 
     return model
 
@@ -138,6 +150,9 @@ class CheckpointManager(object):
     def best_checkpoint_fn(self):
         return '{}/model_best.pth.tar'.format(self.checkpoint_dir)
 
+    def custom_checkpoint_fn(self, filename):
+        return '{}/{}'.format(self.checkpoint_dir, filename)
+
     def checkpoint_fn(self, last=False, best=False):
         assert last or best
         if last:
@@ -147,6 +162,9 @@ class CheckpointManager(object):
 
     def checkpoint_exists(self, last=False, best=False):
         return os.path.isfile(self.checkpoint_fn(last, best))
+
+    def custom_checkpoint_exists(self, filename):
+        return os.path.isfile(self.custom_checkpoint_fn(filename))
 
     def restore(self, fn=None, restore_last=False, restore_best=False, **kwargs):
         checkpoint_fn = fn if fn else self.checkpoint_fn(restore_last, restore_best)
